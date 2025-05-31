@@ -52,6 +52,7 @@ target_link_libraries(firmware
         pico_stdlib
         freertos
         hardware_adc
+        hardware_irq
     )
 
 # Add the standard include files to the build
