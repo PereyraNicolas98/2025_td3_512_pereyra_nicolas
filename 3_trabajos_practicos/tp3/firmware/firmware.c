@@ -7,6 +7,16 @@
 #include "helper.h"
 #include "semphr.h"
 
+// I2C
+#define I2C_PORT i2c0
+
+//SDA pata 6(GPIO4), SCL pata 7(GPIO5) y Frecuencia 400KHz
+#define I2C_SDA 4
+#define I2C_SCL 5
+#define I2C 400*1000
+
+//LCD
+#define LCD_DIR 0x3F
 #define CUENTA_MAX 4096
 
 //Lectura del pulso pata 20(GPIO15)
@@ -22,32 +32,36 @@ SemaphoreHandle_t semaforo_cuenta;
 uint32_t cuenta_pulso;
 float frec;
 
-void lectura_pulso(void *params)
-{
-    while(true)
-    {
-        if(gpio_get(GPIO_PULSO))
-        {
-            xSemaphoreGive(semaforo_cuenta);
-            while(gpio_get(GPIO_PULSO));
-        }
-    }
-}
-
-void escritura_consola(void *params)
+void escritura_LCD(void *params)
 {
     char msg[MAX_CHARS]={0};
     while(true)
     {
+        gpio_set_irq_enabled(GPIO_PULSO, GPIO_IRQ_EDGE_RISE, true);
         vTaskDelay(pdMS_TO_TICKS(250));
+        gpio_set_irq_enabled(GPIO_PULSO, GPIO_IRQ_EDGE_RISE, false);
         cuenta_pulso=uxSemaphoreGetCount(semaforo_cuenta);
         frec= cuenta_pulso * (1000/(float)250);
         if(cuenta_pulso==CUENTA_MAX)
             snprintf(msg, MAX_CHARS, "Max f:%.1fHz", frec);
         else
             snprintf(msg, MAX_CHARS, "%.2fHz", frec);
+        lcd_clear();
+        lcd_set_cursor(0,0);
+        lcd_string("Frecuencia:");
+        lcd_set_cursor(1,0);
+        lcd_string(msg);
         xQueueReset(semaforo_cuenta);
-        printf("Frecuencia: %s\n", msg);
+    }
+}
+
+void lectura_pulso_irq(uint gpio, uint32_t event_mask) 
+{
+    BaseType_t to_higher_priority = pdTRUE;
+    if (event_mask & GPIO_IRQ_EDGE_RISE) 
+    {
+        xSemaphoreGiveFromISR(semaforo_cuenta, &to_higher_priority);
+        portYIELD_FROM_ISR(to_higher_priority);
     }
 }
 
@@ -60,13 +74,25 @@ int main()
     gpio_set_dir(GPIO_PULSO, GPIO_IN);
     gpio_pull_down(GPIO_PULSO);
     
+    //Inicialización de la interrupción
+    gpio_set_irq_enabled_with_callback(GPIO_PULSO, GPIO_IRQ_EDGE_RISE, true, lectura_pulso_irq);
+
+    //Inicialización de I2C
+    i2c_init(I2C_PORT, 400*1000);
+    gpio_set_function(I2C_SDA, GPIO_FUNC_I2C);
+    gpio_set_function(I2C_SCL, GPIO_FUNC_I2C);
+    gpio_pull_up(I2C_SDA);
+    gpio_pull_up(I2C_SCL);
+    
+    //Inicialización de LCD
+    lcd_init(I2C_PORT, LCD_DIR);
+
     //Inicialización del semáforo
     semaforo_cuenta=xSemaphoreCreateCounting(CUENTA_MAX, 0);
 
     //Inicialización de tareas
-    xTaskCreate(escritura_consola, "escritura_consola", configMINIMAL_STACK_SIZE*2, NULL, 2, NULL);
-    xTaskCreate(lectura_pulso, "lectura_pulso", configMINIMAL_STACK_SIZE*2, NULL, 1, NULL);
-
+    xTaskCreate(escritura_LCD, "escritura_LCD", configMINIMAL_STACK_SIZE*2, NULL, 2, NULL); 
+    
     vTaskStartScheduler();
     while (true);
 }
